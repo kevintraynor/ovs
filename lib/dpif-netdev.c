@@ -4887,6 +4887,12 @@ struct rr_numa {
     bool idx_inc;
 };
 
+static size_t
+rr_numa_list_count(struct rr_numa_list *rr)
+{
+    return hmap_count(&rr->numas);
+}
+
 static struct rr_numa *
 rr_numa_list_lookup(struct rr_numa_list *rr, int numa_id)
 {
@@ -5537,7 +5543,6 @@ variance(uint64_t a[], int n)
     return (sqDiff ? (sqDiff / n) : 0);
 }
 
-
 /* Returns the variance in the PMDs usage as part of dry run of rxqs
  * assignment to PMDs. */
 static bool
@@ -5600,10 +5605,16 @@ get_dry_run_variance(struct dp_netdev *dp, uint32_t *core_list,
         int numa_id = netdev_get_numa_id(rxqs[i]->port->netdev);
         numa = rr_numa_list_lookup(&rr, numa_id);
         if (!numa) {
-            /* Abort if cross NUMA polling. */
-            VLOG_DBG("PMD auto lb dry run."
-                     " Aborting due to cross-numa polling.");
-            goto cleanup;
+            /* Check if there is just one NUMA with pmds,
+             * in that case estimates will be ok. */
+            if (rr_numa_list_count(&rr) == 1) {
+                numa = rr_numa_list_next(&rr, NULL);
+            }
+            if (!numa) {
+                VLOG_DBG("PMD auto lb dry run."
+                        " Aborting due to cross-numa polling.");
+                goto cleanup;
+            }
         }
 
         pmd = rr_numa_get_pmd(numa, true);
