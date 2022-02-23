@@ -465,6 +465,7 @@ struct dp_netdev_port {
     bool emc_enabled;           /* If true EMC will be used. */
     char *type;                 /* Port type as requested by user. */
     char *rxq_affinity_list;    /* Requested affinity of rx queues. */
+    bool cross_numa_polling;
     enum txq_req_mode txq_requested_mode;
 };
 
@@ -2114,6 +2115,7 @@ port_create(const char *devname, const char *type,
     port->sf = NULL;
     port->emc_enabled = true;
     port->need_reconfigure = true;
+    port->cross_numa_polling = false;
     ovs_mutex_init(&port->txq_used_mutex);
 
     *portp = port;
@@ -5751,28 +5753,42 @@ compare_rxq_cycles(const void *a, const void *b)
     }
 }
 
+static bool
+sched_pmd_new_lowest(struct sched_pmd *current_lowest, struct sched_pmd *pmd,
+                     bool has_proc) {
+    uint64_t current_num, pmd_num;
+
+    if (current_lowest == NULL) {
+        return true;
+    }
+
+    if (has_proc) {
+        current_num = current_lowest->pmd_proc_cycles;
+        pmd_num = pmd->pmd_proc_cycles;
+    } else {
+        current_num = current_lowest->n_rxq;
+        pmd_num = pmd->n_rxq;
+    }
+
+    if (pmd_num < current_num) {
+        return true;
+    }
+    return false;
+}
+
 static struct sched_pmd *
 sched_pmd_get_lowest(struct sched_numa *numa, bool has_cyc)
 {
     struct sched_pmd *lowest_sched_pmd = NULL;
-    uint64_t lowest_num = UINT64_MAX;
 
     for (unsigned i = 0; i < numa->n_pmds; i++) {
         struct sched_pmd *sched_pmd;
-        uint64_t pmd_num;
 
         sched_pmd = &numa->pmds[i];
         if (sched_pmd->isolated) {
             continue;
         }
-        if (has_cyc) {
-            pmd_num = sched_pmd->pmd_proc_cycles;
-        } else {
-            pmd_num = sched_pmd->n_rxq;
-        }
-
-        if (pmd_num < lowest_num) {
-            lowest_num = pmd_num;
+        if (sched_pmd_new_lowest(lowest_sched_pmd, sched_pmd, has_cyc)) {
             lowest_sched_pmd = sched_pmd;
         }
     }
@@ -5878,6 +5894,32 @@ get_rxq_cyc_log(char *a, enum sched_assignment_type algo, uint64_t cycles)
     return a;
 }
 
+static struct sched_pmd *
+sched_pmd_all_numa_get_lowest(struct sched_numa_list *numa_list,
+                              bool has_proc) {
+    int n_numa;
+    struct sched_numa *numa = NULL;
+    struct sched_numa *last_numa = NULL;
+    struct sched_pmd *lowest_pmd = NULL;
+    struct sched_pmd *pmd;
+
+    n_numa = sched_numa_list_count(numa_list);
+    /* For all numas. */
+    for (int i = 0; i < n_numa; i++) {
+        last_numa = numa;
+        numa = sched_numa_list_next(numa_list, last_numa);
+
+        /* Get the lowest pmd per numa. */
+        pmd = sched_pmd_get_lowest(numa, has_proc);
+
+        /* Check if it's the lowest pmd for all numas. */
+        if (sched_pmd_new_lowest(lowest_pmd, pmd, has_proc)) {
+            lowest_pmd = pmd;
+        }
+    }
+    return lowest_pmd;
+}
+
 static void
 sched_numa_list_schedule(struct sched_numa_list *numa_list,
                          struct dp_netdev *dp,
@@ -5977,9 +6019,12 @@ sched_numa_list_schedule(struct sched_numa_list *numa_list,
         struct dp_netdev_rxq *rxq = rxqs[i];
         struct sched_pmd *sched_pmd = NULL;
         struct sched_numa *numa;
-        int numa_id;
+        bool cross_numa = rxq->port->cross_numa_polling;
+        int port_numa_id;
+        int pmd_numa_id;
         uint64_t proc_cycles;
         char rxq_cyc_log[MAX_RXQ_CYC_STRLEN];
+
 
         if (start_logged == false && level != VLL_DBG) {
             VLOG(level, "Performing pmd to rx queue assignment using %s "
@@ -5989,55 +6034,75 @@ sched_numa_list_schedule(struct sched_numa_list *numa_list,
 
         /* Store the cycles for this rxq as we will log these later. */
         proc_cycles = dp_netdev_rxq_get_cycles(rxq, RXQ_CYCLES_PROC_HIST);
-        /* Select the numa that should be used for this rxq. */
-        numa_id = netdev_get_numa_id(rxq->port->netdev);
-        numa = sched_numa_list_lookup(numa_list, numa_id);
 
-        /* Check if numa has no PMDs or no non-isolated PMDs. */
-        if (!numa || !sched_numa_noniso_pmd_count(numa)) {
-            /* Unable to use this numa to find a PMD. */
-            numa = NULL;
-            /* Find any numa with available PMDs. */
-            for (int j = 0; j < n_numa; j++) {
-                numa = sched_numa_list_next(numa_list, last_cross_numa);
-                if (sched_numa_noniso_pmd_count(numa)) {
-                    break;
-                }
-                last_cross_numa = numa;
+        port_numa_id = netdev_get_numa_id(rxq->port->netdev);
+
+        if (cross_numa && algo == SCHED_GROUP) {
+            /* cross_numa polling enabled so find lowest loaded pmd across
+             * all numas. */
+            sched_pmd = sched_pmd_all_numa_get_lowest(numa_list, proc_cycles);
+        } else {
+            /* Select numa. */
+            numa = sched_numa_list_lookup(numa_list, port_numa_id);
+
+            /* Check if numa has no PMDs or no non-isolated PMDs. */
+            if (!numa || !sched_numa_noniso_pmd_count(numa)) {
+                /* Unable to use this numa to find a PMD. */
                 numa = NULL;
+                /* Find any numa with available PMDs. */
+                for (int j = 0; j < n_numa; j++) {
+                    numa = sched_numa_list_next(numa_list, last_cross_numa);
+                    last_cross_numa = numa;
+                    if (sched_numa_noniso_pmd_count(numa)) {
+                        break;
+                    }
+                    numa = NULL;
+                }
+            }
+            if (numa) {
+                /* Select the PMD that should be used for this rxq. */
+                sched_pmd = sched_pmd_next(numa, algo,
+                                           proc_cycles ? true : false);
             }
         }
 
-        if (numa) {
-            if (numa->numa_id != numa_id) {
-                VLOG(level, "There's no available (non-isolated) pmd thread "
-                            "on numa node %d. Port \'%s\' rx queue %d will "
-                            "be assigned to a pmd on numa node %d. "
-                            "This may lead to reduced performance.",
-                            numa_id, netdev_rxq_get_name(rxq->rx),
-                            netdev_rxq_get_queue_id(rxq->rx), numa->numa_id);
-            }
+        if (sched_pmd) {
+            pmd_numa_id = sched_pmd->numa->numa_id;
+            /* Check if selected pmd numa matches port numa. */
+            if (pmd_numa_id != port_numa_id) {
+                if (cross_numa) {
+                    VLOG(level, "Cross-numa polling has been selected for "
+                                "Port \'%s\' rx queue %d on numa node %d. "
+                                "It will be assigned to a pmd on numa node %d. "
+                                "This may lead to reduced performance.",
+                                netdev_rxq_get_name(rxq->rx),
+                                netdev_rxq_get_queue_id(rxq->rx), port_numa_id,
+                                pmd_numa_id);
 
-            /* Select the PMD that should be used for this rxq. */
-            sched_pmd = sched_pmd_next(numa, algo, proc_cycles ? true : false);
-            if (sched_pmd) {
-                VLOG(level, "Core %2u on numa node %d assigned port \'%s\' "
-                            "rx queue %d%s.",
-                            sched_pmd->pmd->core_id, sched_pmd->pmd->numa_id,
-                            netdev_rxq_get_name(rxq->rx),
-                            netdev_rxq_get_queue_id(rxq->rx),
-                            get_rxq_cyc_log(rxq_cyc_log, algo, proc_cycles));
-                sched_pmd_add_rxq(sched_pmd, rxq, proc_cycles);
+                } else {
+                    VLOG(level, "There's no available (non-isolated) pmd thread "
+                                "on numa node %d. Port \'%s\' rx queue %d will "
+                                "be assigned to a pmd on numa node %d. "
+                                "This may lead to reduced performance.",
+                                port_numa_id, netdev_rxq_get_name(rxq->rx),
+                                netdev_rxq_get_queue_id(rxq->rx), pmd_numa_id);
+                }
             }
-        }
-        if (!sched_pmd) {
+            VLOG(level, "Core %2u on numa node %d assigned port \'%s\' "
+                        "rx queue %d%s.",
+                        sched_pmd->pmd->core_id, sched_pmd->pmd->numa_id,
+                        netdev_rxq_get_name(rxq->rx),
+                        netdev_rxq_get_queue_id(rxq->rx),
+                        get_rxq_cyc_log(rxq_cyc_log, algo, proc_cycles));
+            sched_pmd_add_rxq(sched_pmd, rxq, proc_cycles);
+        } else  {
             VLOG(level == VLL_DBG ? level : VLL_WARN,
-                    "No non-isolated pmd on any numa available for "
-                    "port \'%s\' rx queue %d%s. "
-                    "This rx queue will not be polled.",
-                    netdev_rxq_get_name(rxq->rx),
-                    netdev_rxq_get_queue_id(rxq->rx),
-                    get_rxq_cyc_log(rxq_cyc_log, algo, proc_cycles));
+                 "No non-isolated pmd on any numa available for "
+                 "port \'%s\' rx queue %d%s. "
+                 "This rx queue will not be polled.",
+                 netdev_rxq_get_name(rxq->rx),
+                 netdev_rxq_get_queue_id(rxq->rx),
+                 get_rxq_cyc_log(rxq_cyc_log, algo, proc_cycles));
         }
     }
     free(rxqs);
