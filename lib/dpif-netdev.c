@@ -5755,7 +5755,7 @@ compare_rxq_cycles(const void *a, const void *b)
 
 static bool
 sched_pmd_new_lowest(struct sched_pmd *current_lowest, struct sched_pmd *pmd,
-                     bool has_proc) {
+                     int port_numa_id, bool has_proc) {
     uint64_t current_num, pmd_num;
 
     if (current_lowest == NULL) {
@@ -5770,10 +5770,10 @@ sched_pmd_new_lowest(struct sched_pmd *current_lowest, struct sched_pmd *pmd,
         pmd_num = pmd->n_rxq;
     }
 
-    if (pmd_num < current_num) {
-        return true;
+    if (pmd_num != current_num) {
+        return (pmd_num < current_num) ? true : false;
     }
-    return false;
+    return (pmd->numa->numa_id == port_numa_id) ? true : false;
 }
 
 static struct sched_pmd *
@@ -5788,7 +5788,7 @@ sched_pmd_get_lowest(struct sched_numa *numa, bool has_cyc)
         if (sched_pmd->isolated) {
             continue;
         }
-        if (sched_pmd_new_lowest(lowest_sched_pmd, sched_pmd, has_cyc)) {
+        if (sched_pmd_new_lowest(lowest_sched_pmd, sched_pmd, INT_MAX, has_cyc)) {
             lowest_sched_pmd = sched_pmd;
         }
     }
@@ -5896,7 +5896,7 @@ get_rxq_cyc_log(char *a, enum sched_assignment_type algo, uint64_t cycles)
 
 static struct sched_pmd *
 sched_pmd_all_numa_get_lowest(struct sched_numa_list *numa_list,
-                              bool has_proc) {
+                              int port_numa_id, bool has_proc) {
     int n_numa;
     struct sched_numa *numa = NULL;
     struct sched_numa *last_numa = NULL;
@@ -5913,7 +5913,7 @@ sched_pmd_all_numa_get_lowest(struct sched_numa_list *numa_list,
         pmd = sched_pmd_get_lowest(numa, has_proc);
 
         /* Check if it's the lowest pmd for all numas. */
-        if (sched_pmd_new_lowest(lowest_pmd, pmd, has_proc)) {
+        if (sched_pmd_new_lowest(lowest_pmd, pmd, port_numa_id, has_proc)) {
             lowest_pmd = pmd;
         }
     }
@@ -6040,7 +6040,8 @@ sched_numa_list_schedule(struct sched_numa_list *numa_list,
         if (cross_numa && algo == SCHED_GROUP) {
             /* cross_numa polling enabled so find lowest loaded pmd across
              * all numas. */
-            sched_pmd = sched_pmd_all_numa_get_lowest(numa_list, proc_cycles);
+            sched_pmd = sched_pmd_all_numa_get_lowest(numa_list, port_numa_id,
+                                                      proc_cycles);
         } else {
             /* Select numa. */
             numa = sched_numa_list_lookup(numa_list, port_numa_id);
