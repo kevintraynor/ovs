@@ -311,5 +311,26 @@ A user can use this option to set a minimum frequency of Rx queue to PMD
 reassignment due to PMD Auto Load Balance. For example, this could be set
 (in min) such that a reassignment is triggered at most every few hours.
 
+PMD Power Saving
+----------------
+
+PMD threads poll constantly Rx queues which are assigned to them. In order to
+reduce the CPU cycles they use, they can sleep for small periods of time
+when there is no load or very-low load from the Rx queues it polls.
+
+This can be enabled by::
+
+    $ ovs-vsctl set open_vswitch . other_config:pmd-powersave="true"
+
+A PMD may sleep by an incrementing amount of time up to a total of 250 uS
+after each set of polling all Rx queues assigned to it. If a batch of packets
+is received from any of the Rx queues above a threshold, then the sleep time
+will be reset to 0.
+
+.. note::
+
+    Sleeping in a PMD thread may cause extra packet latency due to the sleep
+    and possible processor low-power states which may be invoked.
+
 .. _ovs-vswitchd(8):
     http://openvswitch.org/support/dist-docs/ovs-vswitchd.8.html
