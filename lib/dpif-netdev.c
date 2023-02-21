@@ -7055,25 +7055,19 @@ reload:
                                                    ? true : false);
         }
 
-        if (max_sleep) {
-            /* Check if a sleep should happen on this iteration. */
-            if (sleep_time) {
-                struct cycle_timer sleep_timer;
+        if (max_sleep && sleep_time) {
+            struct cycle_timer sleep_timer;
 
-                cycle_timer_start(&pmd->perf_stats, &sleep_timer);
-                xnanosleep_no_quiesce(sleep_time * 1000);
-                time_slept = cycle_timer_stop(&pmd->perf_stats, &sleep_timer);
-                pmd_thread_ctx_time_update(pmd);
-            }
-            if (sleep_time < max_sleep) {
-                /* Increase sleep time for next iteration. */
-                sleep_time += PMD_SLEEP_INC_US;
-            } else {
-                sleep_time = max_sleep;
-            }
+            sleep_time = MIN(sleep_time, max_sleep);
+
+            cycle_timer_start(&pmd->perf_stats, &sleep_timer);
+            xnanosleep_no_quiesce(sleep_time * 1000);
+            time_slept = cycle_timer_stop(&pmd->perf_stats, &sleep_timer);
+            pmd_thread_ctx_time_update(pmd);
+
+            sleep_time += PMD_SLEEP_INC_US;
         } else {
-            /* Reset sleep time as max sleep policy may have been changed. */
-            sleep_time = 0;
+            sleep_time = PMD_SLEEP_INC_US;
         }
 
         /* Do RCU synchronization at fixed interval.  This ensures that
