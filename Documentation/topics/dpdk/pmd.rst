@@ -370,5 +370,23 @@ system configuration (e.g. enabling processor C-states) and workloads.
     extra latency before the PMD thread returns to processing packets at full
     rate.
 
+By default with ``pmd-maxsleep`` configured to a non-zero value sleeps will
+take place immediately when there is no/low traffic.
+
+A delay before requesting the initial sleep during no/low load conditions can
+be configured by the user. This may be helpful to avoid going to sleep and
+the resultant wakeup latencies in cases where the traffic is bursty and many
+sleep/wakeup events are happening.
+
+The delay will only take place before the initial sleep request. Subsequent
+sleep requests while no/low load conditions remain will not have any delay.
+The delay will be reset to configured value when no/low conditions are
+no longer present.
+
+For example, a delay in starting to request sleeps of 1 millisecond can be
+configure with::
+
+    $ ovs-vsctl set Open_vSwitch . other_config:pmd-delaysleep=1000
+
 .. _ovs-vswitchd(8):
     http://openvswitch.org/support/dist-docs/ovs-vswitchd.8.html

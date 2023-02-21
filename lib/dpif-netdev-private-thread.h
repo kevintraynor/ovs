@@ -226,6 +226,7 @@ struct dp_netdev_pmd_thread {
 
     /* Next time when PMD should try RCU quiescing. */
     long long next_rcu_quiesce;
+    long long next_sleep_start;
 };
 
 #ifdef  __cplusplus

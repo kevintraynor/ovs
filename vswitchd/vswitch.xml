@@ -811,6 +811,27 @@
           The maximum value is <code>10000 microseconds</code>.
         </p>
       </column>
+      <column name="other_config" key="pmd-delaysleep"
+              type='{"type": "integer",
+                     "minInteger": 0, "maxInteger": 60000000}'>
+        <p>
+          Specifies the time in microseconds for which the pmd will
+          delay requesting any sleeps starting from when the conditions
+          to sleep are met.
+        </p>
+        <p>
+          The delay time is only for the initial sleep. It will be reset
+          when the conditions to sleep are no longer present.
+        </p>
+        <p>
+          The default value is <code>0 microseconds</code>, which means
+          that the PMD will not delay sleeping once the conditions to sleep
+          are met.
+        </p>
+        <p>
+          The maximum value is <code>60000000 microseconds</code>.
+        </p>
+      </column>
       <column name="other_config" key="userspace-tso-enable"
               type='{"type": "boolean"}'>
         <p>

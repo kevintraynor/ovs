@@ -178,6 +178,8 @@ static struct odp_support dp_netdev_support = {
 #define PMD_SLEEP_THRESH (NETDEV_MAX_BURST / 2)
 /* Time in uS to increment a pmd thread sleep time. */
 #define PMD_SLEEP_INC_US 1
+/* Max time in uS to delay a PMD starting to sleep due to low/no load. */
+#define PMD_SLEEP_DELAY_MAX_US 60000000
 
 struct dpcls {
     struct cmap_node node;      /* Within dp_netdev_pmd_thread.classifiers */
@@ -289,6 +291,7 @@ struct dp_netdev {
     atomic_bool pmd_perf_metrics;
     /* Max load based sleep request. */
     atomic_uint64_t pmd_max_sleep;
+    atomic_uint64_t pmd_delay_sleep;
     /* Enable the SMC cache from ovsdb config */
     atomic_bool smc_enable_db;
 
@@ -4832,7 +4835,9 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
     uint8_t cur_rebalance_load;
     uint32_t rebalance_load, rebalance_improve;
     uint64_t  pmd_max_sleep, cur_pmd_max_sleep;
+    uint64_t  pmd_delay_sleep, cur_pmd_delay_sleep;
     bool log_autolb = false;
+    bool log_pmdsleep = false;
     enum sched_assignment_type pmd_rxq_assign_type;
     static bool first_set_config = true;
 
@@ -4987,7 +4992,20 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
     atomic_read_relaxed(&dp->pmd_max_sleep, &cur_pmd_max_sleep);
     if (first_set_config || pmd_max_sleep != cur_pmd_max_sleep) {
         atomic_store_relaxed(&dp->pmd_max_sleep, pmd_max_sleep);
+        log_pmdsleep = true;
+    }
+
+    pmd_delay_sleep = smap_get_ullong(other_config, "pmd-delaysleep", 0);
+    pmd_delay_sleep = MIN(PMD_SLEEP_DELAY_MAX_US, pmd_delay_sleep);
+    atomic_read_relaxed(&dp->pmd_delay_sleep, &cur_pmd_delay_sleep);
+    if (first_set_config || pmd_delay_sleep != cur_pmd_delay_sleep) {
+        atomic_store_relaxed(&dp->pmd_delay_sleep, pmd_delay_sleep);
+        log_pmdsleep = true;
+    }
+
+    if (log_pmdsleep) {
         VLOG_INFO("PMD max sleep request is %"PRIu64" usecs.", pmd_max_sleep);
+        VLOG_INFO("PMD sleep delay is %"PRIu64" usecs.", pmd_delay_sleep);
         VLOG_INFO("PMD load based sleeps are %s.",
                   pmd_max_sleep ? "enabled" : "disabled" );
     }
@@ -7056,18 +7074,29 @@ reload:
         }
 
         if (max_sleep && sleep_time) {
-            struct cycle_timer sleep_timer;
+            if (pmd->next_sleep_start
+                && pmd->ctx.now >= pmd->next_sleep_start) {
+                struct cycle_timer sleep_timer;
 
-            sleep_time = MIN(sleep_time, max_sleep);
+                sleep_time = MIN(sleep_time, max_sleep);
 
-            cycle_timer_start(&pmd->perf_stats, &sleep_timer);
-            xnanosleep_no_quiesce(sleep_time * 1000);
-            time_slept = cycle_timer_stop(&pmd->perf_stats, &sleep_timer);
-            pmd_thread_ctx_time_update(pmd);
+                cycle_timer_start(&pmd->perf_stats, &sleep_timer);
+                xnanosleep_no_quiesce(sleep_time * 1000);
+                time_slept = cycle_timer_stop(&pmd->perf_stats, &sleep_timer);
+                pmd_thread_ctx_time_update(pmd);
 
-            sleep_time += PMD_SLEEP_INC_US;
+                sleep_time += PMD_SLEEP_INC_US;
+            } else if (!pmd->next_sleep_start) {
+                /* Set sleep start time. */
+                uint64_t delay_sleep;
+
+                atomic_read_relaxed(&pmd->dp->pmd_delay_sleep, &delay_sleep);
+                pmd_thread_ctx_time_update(pmd);
+                pmd->next_sleep_start = pmd->ctx.now + delay_sleep;
+            }
         } else {
             sleep_time = PMD_SLEEP_INC_US;
+            pmd->next_sleep_start = 0;
         }
 
         /* Do RCU synchronization at fixed interval.  This ensures that
@@ -7571,6 +7600,8 @@ dp_netdev_configure_pmd(struct dp_netdev_pmd_thread *pmd, struct dp_netdev *dp,
     pmd->next_cycle_store = pmd->ctx.now + PMD_INTERVAL_LEN;
     pmd->busy_cycles_intrvl = xzalloc(PMD_INTERVAL_MAX *
                                       sizeof *pmd->busy_cycles_intrvl);
+    pmd->next_sleep_start = 0;
+
     hmap_init(&pmd->poll_list);
     hmap_init(&pmd->tx_ports);
     hmap_init(&pmd->tnl_port_cache);

@@ -1300,3 +1300,34 @@ OVS_WAIT_UNTIL([tail -n +$LINENUM ovs-vswitchd.log | grep "PMD load based sleeps
 
 OVS_VSWITCHD_STOP
 AT_CLEANUP
+
+AT_SETUP([PMD - pmd sleep delay])
+OVS_VSWITCHD_START
+
+dnl Check default with sleeps disabled
+OVS_WAIT_UNTIL([tail ovs-vswitchd.log | grep "PMD sleep delay is 0 usecs."])
+OVS_WAIT_UNTIL([tail ovs-vswitchd.log | grep "PMD load based sleeps are disabled."])
+
+dnl Check low value delay sleep
+AT_CHECK([ovs-vsctl set open_vswitch . other_config:pmd-maxsleep="1"])
+get_log_next_line_num
+AT_CHECK([ovs-vsctl set open_vswitch . other_config:pmd-delaysleep="1"])
+OVS_WAIT_UNTIL([tail -n +$LINENUM ovs-vswitchd.log | grep "PMD sleep delay is 1 usecs."])
+
+dnl Check high value delay sleep
+get_log_next_line_num
+AT_CHECK([ovs-vsctl set open_vswitch . other_config:pmd-delaysleep="60000000"])
+OVS_WAIT_UNTIL([tail -n +$LINENUM ovs-vswitchd.log | grep "PMD sleep delay is 60000000 usecs."])
+
+dnl Check setting delay sleep to zero
+get_log_next_line_num
+AT_CHECK([ovs-vsctl set open_vswitch . other_config:pmd-delaysleep="0"])
+OVS_WAIT_UNTIL([tail -n +$LINENUM ovs-vswitchd.log | grep "PMD sleep delay is 0 usecs."])
+
+dnl Check above high value max sleep
+get_log_next_line_num
+AT_CHECK([ovs-vsctl set open_vswitch . other_config:pmd-delaysleep="60000001"])
+OVS_WAIT_UNTIL([tail -n +$LINENUM ovs-vswitchd.log | grep "PMD sleep delay is 60000000 usecs."])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
