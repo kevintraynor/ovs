@@ -2154,7 +2154,6 @@ netdev_dpdk_run(const struct netdev_class *netdev_class OVS_UNUSED)
             if (!pending_reset) {
                 continue;
             }
-            atomic_store_relaxed(&netdev_dpdk_pending_reset[port_id], false);
 
             ovs_mutex_lock(&dpdk_mutex);
             dev = netdev_dpdk_lookup_by_port_id(port_id);
@@ -2165,6 +2164,7 @@ netdev_dpdk_run(const struct netdev_class *netdev_class OVS_UNUSED)
                 VLOG_DBG_RL(&rl, "%s: Device reset requested.",
                             netdev_get_name(&dev->up));
                 ovs_mutex_unlock(&dev->mutex);
+                atomic_store_relaxed(&netdev_dpdk_pending_reset[port_id], false);
             }
             ovs_mutex_unlock(&dpdk_mutex);
         }
@@ -6074,6 +6074,7 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     bool try_rx_steer;
     int err = 0;
+    bool pending_reset = false;
 
     ovs_mutex_lock(&dev->mutex);
 
@@ -6101,12 +6102,21 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
 retry:
     dpdk_rx_steer_unconfigure(dev);
 
-    if (dev->reset_needed) {
+    if (dev->reset_needed == false && dev->started == false) {
+        atomic_read_relaxed(&netdev_dpdk_pending_reset[dev->port_id],
+                            &pending_reset);
+    }
+
+    if (dev->reset_needed || pending_reset) {
         rte_eth_dev_reset(dev->port_id);
         if_notifier_manual_report();
         dev->reset_needed = false;
     } else {
         rte_eth_dev_stop(dev->port_id);
+    }
+
+    if (pending_reset) {
+        atomic_store_relaxed(&netdev_dpdk_pending_reset[dev->port_id], false);
     }
 
     dev->started = false;
