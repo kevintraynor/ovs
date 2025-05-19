@@ -1,5 +1,29 @@
 v3.5.1 - xx xxx xxxx
 --------------------
+   - Bonding:
+     * Bond rebalancing log messages of INFO log level are highly reduced: they
+       are now printed once in rebalance run.  Previous detailed log messages
+       have been moved to the DBG log level.
+   - DPDK:
+     * New debug appctl command 'dpdk/get-memzone-stats'.
+     * OVS validated with DPDK 24.11.2.
+   - ovs-ctl:
+     * Added a new option, --oom-score=<score>, to set the daemons' Linux
+       Out-Of-Memory (OOM) killer score.
+   - SSL/TLS:
+     * Support for deprecated TLSv1 and TLSv1.1 protocols on OpenFlow and
+       database connections is now removed.
+   - Tunnels:
+     * Support for previously deprecated LISP and STT tunnel port types
+       is now removed.
+   - ovs-tcpdump:
+     * Update the --mirror-to option, adding support for specifying an
+       existing port as a mirror interface.
+   - Updated documentation to remove most documentation of kernel module
+     that was previously part of the OVS distribution. It was removed from
+     the OVS distribution in the 3.0 release and is no longer present in
+     any supported versions of OVS. The remaining documentation of this
+     kernel module relates to topics for older releases of OVS.
 
 v3.5.0 - 17 Feb 2025
 --------------------
